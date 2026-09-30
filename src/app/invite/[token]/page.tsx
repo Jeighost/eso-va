@@ -1,87 +1,64 @@
+import { cache } from 'react'
+import type { Metadata } from 'next'
 import { notFound } from 'next/navigation'
 import { createClient } from '@/utils/supabase/server'
-import InviteClient from './InviteClient'
+import { normalizeTheme } from '@/lib/invitation/theme'
+import { formatEventDate } from '@/lib/invitation/datetime'
+import { inviteStrings, localeFor } from '@/lib/invitation/i18n'
+import { requestBaseUrl } from '@/lib/site'
+import { InvitationBackdrop, InvitationCard, PoweredBy } from '@/components/invitation/InvitationCard'
 
-// Metadatos para WhatsApp y Redes Sociales
-export async function generateMetadata(props: { params: Promise<{ token: string }> }) {
-  const params = await props.params
+const getEvent = cache(async (token: string) => {
   const supabase = await createClient()
-  const { data: event } = await supabase
+  const { data } = await supabase
     .from('events')
-    .select('title, location, event_date')
-    .eq('unique_token', params.token)
+    .select('id, title, event_date, location, allow_photos, allow_songs, theme_id')
+    .eq('unique_token', token)
     .single()
+  return data
+})
 
-  if (!event) return { title: 'Invitación no encontrada' }
+export async function generateMetadata(props: { params: Promise<{ token: string }> }): Promise<Metadata> {
+  const { token } = await props.params
+  const event = await getEvent(token)
+  if (!event) return { title: 'Invitación no encontrada', robots: { index: false } }
+
+  const theme = normalizeTheme(event.theme_id)
+  const t = inviteStrings(theme.language)
+  const d = formatEventDate(event.event_date, localeFor(theme.language), theme.timezone)
+  const title = theme.customTitle || event.title
+  const description = `${d.weekday} ${d.date} · ${d.time}${event.location ? ` — ${event.location}` : ''}`
 
   return {
-    title: `¡Estás invitado a ${event.title}!`,
-    description: `Acompáñanos el ${new Date(event.event_date).toLocaleDateString()} en ${event.location}.`,
+    title: { absolute: `${t.invited} ${title}` },
+    description,
+    robots: { index: false, follow: false },
     openGraph: {
-      title: `¡Estás invitado a ${event.title}!`,
-      description: `Te esperamos el ${new Date(event.event_date).toLocaleDateString()}. ¡Confirma tu asistencia!`,
-      images: ['/default-invite-bg.jpg'],
-    }
+      title: `${t.invited} ${title}`,
+      description,
+      type: 'website',
+    },
+    twitter: { card: 'summary_large_image', title, description },
   }
 }
 
 export default async function InvitePage(props: { params: Promise<{ token: string }> }) {
-  const params = await props.params
-  const supabase = await createClient()
-  const { data: event } = await supabase
-    .from('events')
-    .select('*')
-    .eq('unique_token', params.token)
-    .single()
-
+  const { token } = await props.params
+  const event = await getEvent(token)
   if (!event) notFound()
 
-  let theme = {
-    color: '#FF2600',
-    font: 'Playfair Display',
-    coverImage: 'https://images.unsplash.com/photo-1519225421980-715cb0215aed?q=80&w=800&auto=format&fit=crop',
-    pattern: 'none',
-    cardBg: '#ffffff',
-    customTitle: '',
-    hosts: '',
-    message: '',
-    borderRadius: 'xl'
-  }
-  try {
-    if (event.theme_id && event.theme_id.startsWith('{')) {
-      theme = { ...theme, ...JSON.parse(event.theme_id) }
-    }
-  } catch (e) {}
-
-  const radiusMap: any = {
-    'none': 'rounded-none',
-    'md': 'rounded-md',
-    'xl': 'rounded-xl',
-    'full': 'rounded-3xl'
-  }
-
-  const FONT_MAP: Record<string, string> = {
-    'sans': 'ui-sans-serif, system-ui, sans-serif',
-    'serif': 'ui-serif, Georgia, serif',
-    'mono': 'ui-monospace, SFMono-Regular, monospace',
-    'Playfair Display': '"Playfair Display", serif',
-    'Montserrat': '"Montserrat", sans-serif',
-    'Dancing Script': '"Dancing Script", cursive',
-    'Cinzel': '"Cinzel", serif',
-    'Great Vibes': '"Great Vibes", cursive',
-    'Lato': '"Lato", sans-serif',
-    'Pacifico': '"Pacifico", cursive',
-    'Oswald': '"Oswald", sans-serif'
-  }
-
-  const fontFamily = FONT_MAP[theme.font] || FONT_MAP['sans']
+  const theme = normalizeTheme(event.theme_id)
+  const inviteUrl = `${await requestBaseUrl()}/invite/${token}`
 
   return (
-    <div 
-      className="min-h-screen flex flex-col items-center py-12 px-4 relative overflow-hidden bg-slate-50"
-      style={{ fontFamily }}
-    >
-      <InviteClient event={event} theme={theme} token={params.token} radiusMap={radiusMap} />
-    </div>
+    <main className="relative isolate flex min-h-dvh flex-col items-center px-3 py-8 sm:px-6 sm:py-14">
+      <InvitationBackdrop theme={theme} className="fixed -z-10" />
+      <div className="w-full max-w-[34rem]">
+        <InvitationCard event={event} theme={theme} token={token} mode="live" inviteUrl={inviteUrl} />
+      </div>
+      <div className="mt-8">
+        <PoweredBy theme={theme} />
+      </div>
+    </main>
   )
 }

@@ -3,38 +3,34 @@
 import { revalidatePath } from 'next/cache'
 import { redirect } from 'next/navigation'
 import { createClient } from '@/utils/supabase/server'
+import { normalizeTheme, serializeTheme } from '@/lib/invitation/theme'
+import { themeForEventType } from '@/lib/invitation/presets'
+import { parseEventForm } from '@/lib/event-form'
+import type { EventFormState } from '@/components/dashboard/EventForm'
 
-export async function createEvent(formData: FormData) {
+export async function createEvent(_: EventFormState, fd: FormData): Promise<EventFormState> {
   const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) redirect('/login')
 
-  const { data: { user } } = await supabase.auth.getUser()
+  const parsed = parseEventForm(fd)
+  if (!parsed.ok) return { error: parsed.error }
+  const { timezone, language, ...columns } = parsed.value
 
-  if (!user) {
-    redirect('/login')
+  const theme = themeForEventType(columns.event_type, { timezone, language })
+  const { data, error } = await supabase
+    .from('events')
+    .insert({ ...columns, user_id: user.id, theme_id: serializeTheme(normalizeTheme(theme)) })
+    .select('id')
+    .single()
+
+  if (error || !data) {
+    console.error('Create event failed:', error?.message)
+    return { error: 'No pudimos crear el evento. Inténtalo de nuevo.' }
   }
 
-  const title = formData.get('title') as string
-  const event_type = formData.get('event_type') as string
-  const event_date = formData.get('event_date') as string
-  const location = formData.get('location') as string
-  const allow_photos = formData.get('allow_photos') === 'on'
-  const allow_songs = formData.get('allow_songs') === 'on'
-
-  const { data, error } = await supabase.from('events').insert({
-    user_id: user.id,
-    title,
-    event_type,
-    event_date: new Date(event_date).toISOString(),
-    location,
-    allow_photos,
-    allow_songs
-  }).select().single()
-
-  if (error) {
-    console.error('Error creando evento:', error.message)
-    return redirect(`/dashboard/create?message=${encodeURIComponent(error.message)}`)
-  }
-
-  revalidatePath('/dashboard', 'layout')
-  redirect(`/dashboard`)
+  revalidatePath('/dashboard')
+  redirect(`/studio/${data.id}?welcome=1`)
 }
